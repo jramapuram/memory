@@ -9,7 +9,6 @@ class Complex(object):
     ''' Simple Complex Number Class for pytorch '''
     def __init__(self, real, imag=None):
         ''' if imag is none we divide real --> [re, im]'''
-        print('imag is none?', imag is None)
         if imag is not None:
             assert real.size() == imag.size(), "{}re != {}im".format(
                 real.size(), imag.size())
@@ -130,22 +129,6 @@ def circular_convolution_fft(keys, values, normalized=True, conj=False, cuda=Fal
     # conj transpose
     keys = Complex(keys).conj().unstack() if conj else keys
 
-    # zero bad upto required_size on BOTH sides
-    # num_key_zeros_each_size = int(np.ceil((required_size - keys_feature_size)/2))
-    # num_value_zeros_each_size = int(np.ceil((required_size - values_feature_size)/2))
-    # keys = F.pad(keys,
-    #              (num_key_zeros_each_size, num_key_zeros_each_size),
-    #              "constant", 0)
-    # values = F.pad(values,
-    #                (num_value_zeros_each_size, num_value_zeros_each_size),
-    #                "constant", 0)
-
-    # zero pad upto required size
-    # num_key_zeros = required_size - keys_feature_size
-    # num_value_zeros = required_size - values_feature_size
-    # keys = F.pad(keys, (0, num_key_zeros), "constant", 0)
-    # values = F.pad(values, (0, num_value_zeros), "constant", 0)
-
     # reshape to [batch, [real, imag]]
     half = keys.size(-1) // 2
     keys = torch.cat([keys[:, 0:half].unsqueeze(2), keys[:, half:].unsqueeze(2)], -1)
@@ -155,9 +138,15 @@ def circular_convolution_fft(keys, values, normalized=True, conj=False, cuda=Fal
     kf = torch.fft(keys, signal_ndim=1, normalized=normalized)
     vf = torch.fft(values, signal_ndim=1, normalized=normalized)
     kvif = torch.ifft(kf*vf, signal_ndim=1, normalized=normalized)#[:, 0:required_size]
+
+    # if conj:
+    #     return Complex(kvif[:, :, 1], kvif[:, :, 0]).unstack()
+
+    return Complex(kvif[:, :, 0], kvif[:, :, 1]).unstack()
+
     #return Complex(kvif[:, :, 0], kvif[:, :, 1]).abs() if not conj \
-    return Complex(kvif[:, :, 0], kvif[:, :, 1]).unstack() if not conj \
-        else Complex(kvif[:, :, 1], kvif[:, :, 0]).abs()
+    return Complex(kvif[:, :, 0], kvif[:, :, 1]).unstack() # if not conj \
+        # else Complex(kvif[:, :, 1], kvif[:, :, 0]).abs()
 
 
 class HolographicMemory(nn.Module):
@@ -240,40 +229,59 @@ class HolographicMemory(nn.Module):
 
 if __name__ == "__main__":
     # simple test on MNIST recovery
+    import argparse
     import torchvision
     from torchvision import datasets, transforms
-    batch_size, feature_size, num_encode, num_mem = 10, 784, 1, 100
+
+    parser = argparse.ArgumentParser(description='HolographicMemory MNIST Recovery')
+
+    # Task parameters
+    parser.add_argument('--batch-size', type=int, default=10,
+                        help="batch size (default: 10)")
+    parser.add_argument('--batches-to-encode', type=int, default=10,
+                        help="how many minibatches to encode (default: 10)")
+    parser.add_argument('--num-memories', type=int, default=10,
+                        help="number of memory traces (default: 10)")
+    parser.add_argument('--no-cuda', action='store_true', default=False,
+                        help='disables CUDA training')
+    args = parser.parse_args()
+    args.cuda = not args.no_cuda and torch.cuda.is_available()
+
+    feature_size =  784
     mnist = torch.utils.data.DataLoader(
         datasets.MNIST('.datasets', train=True, download=True, transform=transforms.ToTensor()),
-        batch_size=batch_size,
+        batch_size=args.batch_size,
         drop_last=True,
         shuffle=True,
     )
 
     # build memory and some random keys
-    memory = HolographicMemory(num_init_memories=num_mem, normalization='complex', cuda=True)
-    keys = [torch.randn(batch_size, feature_size).cuda()
-            for _ in range(num_encode)]
+    memory = HolographicMemory(num_init_memories=args.num_memories,
+                               normalization='complex', cuda=args.cuda)
+    keys = [torch.randn(args.batch_size, feature_size)
+            for _ in range(args.batches_to_encode)]
+    if args.cuda:
+        keys = [k.cuda() for k in keys]
 
     # encode some images
     img_container, key_container = [], []
     for i, (img, lbl) in enumerate(mnist):
-        if i > num_encode - 1:
+        if i > args.batches_to_encode - 1:
             break
 
-        img, lbl = img.cuda(), lbl.cuda()
+        img, lbl = img.cuda() if args.cuda else img, lbl.cuda() if args.cuda else lbl
         img_container.append(img)
-        memory.encode(keys[i], img.view(batch_size, -1))
+        memory.encode(keys[i], img.view(args.batch_size, -1))
         # lbl = lbl.unsqueeze(1) if lbl.dim() < 2 else lbl
         # key_container.append(one_hot(feature_size, lbl, True).type(float_type(True)))
         # print(img.size(), lbl.size(), key_container[-1].size())
-        # memory.encode(key_container[-1], img.view(batch_size, -1))
+        # memory.encode(key_container[-1], img.view(args.batch_size, -1))
 
     img_container = torch.cat(img_container, 0)
     # keys = torch.cat(key_container, 0)
     # print("key container post = ", keys.size())
     print("encoded {} samples x {} --> {}".format(
-        batch_size, list(img.size()), list(memory.memories.size())))
+        args.batch_size, list(img.size()), list(memory.memories.size())))
 
     # try to decode
     values = torch.cat([memory.decode(key) for key in keys], 0)
@@ -284,7 +292,7 @@ if __name__ == "__main__":
     # save image for visualization
     grid = torchvision.utils.make_grid(
         torch.cat([img_container, values.view(-1, 1, 28, 28)], 0),
-        nrow=batch_size, normalize=True, scale_each=True
+        nrow=args.batch_size, normalize=True, scale_each=True
     )
     def show(img):
         import matplotlib.pyplot as plt
