@@ -205,10 +205,20 @@ class HolographicMemory(nn.Module):
                                    cuda=self.cuda)
         self.memories = self.memories + conv_output if self.memories is not None else conv_output
 
-    def extend_memory(self, num_to_extend):
-        new_perms, new_inv_perms = self._generate_perms_and_inverses(num_to_extend)
+    def extend_memory(self, batch_size, feature_size, num_to_extend):
+        if num_to_extend < 1:
+            return
+
+        new_perms, new_inv_perms = self._generate_perms_and_inverses(
+            feature_size, num_to_extend
+        )
         self.perms.extend(new_perms)
         self.inv_perms.extend(new_inv_perms)
+        if self.memories is not None:
+            zero_vectors = float_type(self.cuda)(batch_size*num_to_extend, feature_size).zero_()
+            self.memories = torch.cat([self.memories, zero_vectors], 0)
+
+        self.num_memories += num_to_extend
 
     def decode(self, keys):
         '''
@@ -236,12 +246,16 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='HolographicMemory MNIST Recovery')
 
     # Task parameters
+    parser.add_argument('--key-type', type=str, default='gaussian',
+                        help="type of key: gaussian or onehot (default: gaussian)")
     parser.add_argument('--batch-size', type=int, default=10,
                         help="batch size (default: 10)")
     parser.add_argument('--batches-to-encode', type=int, default=10,
                         help="how many minibatches to encode (default: 10)")
     parser.add_argument('--num-memories', type=int, default=10,
                         help="number of memory traces (default: 10)")
+    parser.add_argument('--increment-memories-per-batch', type=int, default=0,
+                        help="number of memory traces to increase per batch (default: 0)")
     parser.add_argument('--no-cuda', action='store_true', default=False,
                         help='disables CUDA training')
     args = parser.parse_args()
@@ -258,8 +272,13 @@ if __name__ == "__main__":
     # build memory and some random keys
     memory = HolographicMemory(num_init_memories=args.num_memories,
                                normalization='complex', cuda=args.cuda)
-    keys = [torch.randn(args.batch_size, feature_size)
-            for _ in range(args.batches_to_encode)]
+    if args.key_type == 'gaussian':
+        keys = [torch.randn(args.batch_size, feature_size)
+                for _ in range(args.batches_to_encode)]
+    else:
+        rv = torch.distributions.OneHotCategorical(probs=torch.rand(args.batch_size, feature_size))
+        keys = [rv.sample() for _ in range(args.batches_to_encode)]
+
     if args.cuda:
         keys = [k.cuda() for k in keys]
 
@@ -276,6 +295,9 @@ if __name__ == "__main__":
         # key_container.append(one_hot(feature_size, lbl, True).type(float_type(True)))
         # print(img.size(), lbl.size(), key_container[-1].size())
         # memory.encode(key_container[-1], img.view(args.batch_size, -1))
+
+        # expand_mem if requested
+        memory.extend_memory(args.batch_size, feature_size, args.increment_memories_per_batch)
 
     img_container = torch.cat(img_container, 0)
     # keys = torch.cat(key_container, 0)
