@@ -121,7 +121,7 @@ def circular_convolution_fft(keys, values, normalized=True, conj=False, cuda=Fal
     '''
     assert values.dim() == keys.dim() == 2, "only 2 dims supported"
     assert values.size(-1) % 2 == keys.size(-1) % 2 == 0, "need last dim to be divisible by 2"
-    keys_feature_size = keys.size(1)
+    batch_size, keys_feature_size = keys.size(0), keys.size(1)
     values_feature_size = values.size(1)
     required_size = keys_feature_size + values_feature_size - 1
     required_size = required_size + 1 if required_size % 2 != 0 else required_size
@@ -141,12 +141,11 @@ def circular_convolution_fft(keys, values, normalized=True, conj=False, cuda=Fal
 
     # if conj:
     #     return Complex(kvif[:, :, 1], kvif[:, :, 0]).unstack()
-
-    return Complex(kvif[:, :, 0], kvif[:, :, 1]).unstack()
-
     #return Complex(kvif[:, :, 0], kvif[:, :, 1]).abs() if not conj \
-    return Complex(kvif[:, :, 0], kvif[:, :, 1]).unstack() # if not conj \
+    # return Complex(kvif[:, :, 0], kvif[:, :, 1]).unstack() # if not conj \
         # else Complex(kvif[:, :, 1], kvif[:, :, 0]).abs()
+
+    return Complex(kvif[:, :, 0], kvif[:, :, 1]).unstack().view(batch_size, -1)
 
 
 class HolographicMemory(nn.Module):
